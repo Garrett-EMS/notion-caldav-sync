@@ -1,6 +1,8 @@
 # Notion → iCloud Calendar Sync
 
-Cloudflare Python Worker that mirrors every dated Notion task into a single iCloud calendar. Webhooks push near-real-time updates, and a cron-triggered rewrite keeps the calendar authoritative.
+Prefer living inside Apple Calendar but still tracking tasks in Notion? This Cloudflare Python Worker is the simplest way to surface every dated Notion task inside a dedicated iCloud calendar. Webhooks keep updates nearly instant, and a cron-powered rewrite regularly reconciles the two so Apple Calendar always reflects the latest Notion truth.
+
+The design goal is **Reliability first**. every change pushes instantly via webhooks and the cron rewrite continually reconciles Notion -> Calendar to heal drift automatically.
 
 ## Requirements
 - Python 3.12+, [uv](https://github.com/astral-sh/uv), and Cloudflare’s `pywrangler` CLI.
@@ -43,23 +45,23 @@ The script ensures `wrangler.toml` matches your KV namespace, prompts for secret
 
 Pywrangler automatically bundles your project code and dependencies during `dev`/`deploy` (see Cloudflare’s [Python packages guide](https://developers.cloudflare.com/workers/languages/python/packages)).
 
-### Create the Notion integration
+## Create the Notion integration
 1. Visit [Notion Developers → My integrations](https://www.notion.so/my-integrations) and create a new integration.
-2. Fill out the basic form:
-   - **Integration name:** e.g. `iCloud Calendar`.
-   - **Associated workspace:** whichever workspace owns your task databases.
+2. **Basics**
+   - **Integration name:** `Notion → iCloud Calendar` (any meaningful name works)
+   - **Workspace:** select the workspace that owns your task databases
 3. **Capabilities**
-   - *Content* → enable only **Read content**.
-   - *Comments* → leave every option unchecked.
-   - *User information* → choose **No user information**.
+   - **Content:** enable only *Read content*
+   - **Comments:** leave all unchecked
+   - **User information:** select *No user information*
 4. **Access**
-   - Under *Page and database access*, explicitly select the databases that should appear in the calendar.
+   - Under *Page and database access*, choose the databases that should sync (make sure they’re shared with the integration inside Notion)
 5. **Webhooks**
-   - *Webhook URL:* `https://<worker-url>/webhook/notion` (replace with your .workers.dev domain or custom route).
-   - *Subscribed events:* check every **Page**, **Database**, and **Data source** entry. Leave **Comment** and **File upload** unchecked.
-6. Save the integration and copy the generated secret into your `.env` as `NOTION_TOKEN`.
+   - **Webhook URL:** `https://<worker-url>/webhook/notion` (replace with your *.workers.dev domain or custom route)
+   - **Subscribed events:** select every **Page**, **Database**, and **Data source** entry; leave **Comment** and **File upload** unchecked
+6. Save the integration and copy the generated secret into `.env` as `NOTION_TOKEN`.
 
-### Useful HTTP endpoints
+## Useful HTTP endpoints
 - Manual full rewrite: `curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" http://localhost:8787/admin/full-sync`
 - Settings view/update: `curl -H "X-Admin-Token: $ADMIN_TOKEN" http://localhost:8787/admin/settings`
 - Debug info: `curl -H "X-Admin-Token: $ADMIN_TOKEN" http://localhost:8787/admin/debug`

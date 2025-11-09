@@ -43,6 +43,27 @@ def test_build_event_all_day_expands_dates_and_description():
     assert [str(item) for item in getattr(categories, "cats", [])] == ["Travel"]
 
 
+def test_build_event_all_day_range_adds_extra_day():
+    summary_emoji = status_to_emoji("Todo")
+    ics = build_event(
+        notion_id="task-range",
+        title="Weekend trip",
+        status_emoji=summary_emoji,
+        status_name="Todo",
+        start_iso="2025-11-08",
+        end_iso="2025-11-09",
+        reminder_iso=None,
+        description=None,
+        category=None,
+        color=None,
+        url=None,
+    )
+    event = _first_event(ics)
+    assert str(event.get("dtstart").dt) == "2025-11-08"
+    # dtend should be exclusive, so an extra day ensures iCal shows both 8th and 9th
+    assert str(event.get("dtend").dt) == "2025-11-10"
+
+
 def test_build_event_timed_uses_utc_and_reminder():
     status_emoji = status_to_emoji("In progress")
     ics = build_event(

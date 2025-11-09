@@ -147,7 +147,7 @@ def build_event(
             d = dtparser.isoparse(start_iso).date()
             event.add('dtstart', d)
             if end_iso:
-                d2 = dtparser.isoparse(end_iso).date()
+                d2 = dtparser.isoparse(end_iso).date() + timedelta(days=1)
             else:
                 d2 = d + timedelta(days=1)
             event.add('dtend', d2)

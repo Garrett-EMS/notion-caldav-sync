@@ -27,7 +27,7 @@ STATUS_EMOJI = {
     "Todo": "⬜",
     "In progress": "⚙️",
     "Completed": "✅",
-    "Overdue": "🔴",
+    "Overdue": "⚠️",
     "Cancelled": "❌",
 }
 

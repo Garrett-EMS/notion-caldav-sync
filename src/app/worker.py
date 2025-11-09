@@ -71,8 +71,18 @@ class Default(WorkerEntrypoint):
             if not self._has_valid_admin_token(request, query, bindings):
                 return Response("Unauthorized", status=401)
             if method == "GET":
-                data = await load_settings(bindings.state)
-                return Response(json.dumps(data), headers={"Content-Type": "application/json"})
+                try:
+                    from app.engine import ensure_calendar as ensure_calendar_state  # type: ignore
+                except ImportError:
+                    from engine import ensure_calendar as ensure_calendar_state  # type: ignore
+                try:
+                    document = await ensure_calendar_state(bindings)
+                    return Response(json.dumps(document), headers={"Content-Type": "application/json"})
+                except RuntimeError as exc:
+                    fallback = await load_settings(bindings.state)
+                    payload = dict(fallback)
+                    payload["error"] = str(exc)
+                    return Response(json.dumps(payload), status=500, headers={"Content-Type": "application/json"})
             if method in {"POST", "PUT"}:
                 try:
                     payload = await request.json()
@@ -91,8 +101,8 @@ class Default(WorkerEntrypoint):
                         updates["full_sync_interval_minutes"] = minutes
                     except Exception:
                         return Response("Invalid full_sync_interval_minutes", status=400)
-                data = await update_settings(bindings.state, **updates)
-                return Response(json.dumps(data), headers={"Content-Type": "application/json"})
+                document = await update_settings(bindings.state, **updates)
+                return Response(json.dumps(document), headers={"Content-Type": "application/json"})
             return Response("Method Not Allowed", status=405)
         
         # Debug endpoint to check JS APIs and pyodide-http status

@@ -328,7 +328,7 @@ async def remove_missing_events(
             await delete_event(href, apple_id, apple_app_password)
 
 
-async def ensure_calendar(bindings: Bindings) -> Dict[str, str]:
+async def ensure_calendar(bindings: Bindings, *, _reset_attempted: bool = False) -> Dict[str, str]:
     """Ensure the dedicated Notion calendar exists and metadata is persisted in KV."""
     settings = await load_settings(bindings.state)
     calendar_href = settings.get("calendar_href")
@@ -369,4 +369,21 @@ async def ensure_calendar(bindings: Bindings) -> Dict[str, str]:
     desired_color = remote_color or stored_color or DEFAULT_CALENDAR_COLOR
     if desired_color != stored_color_raw:
         settings = await update_settings(bindings.state, calendar_color=desired_color)
-    return settings
+
+    final_settings = await load_settings(bindings.state)
+    if final_settings.get("calendar_href"):
+        return final_settings
+
+    if _reset_attempted:
+        raise RuntimeError("Unable to determine calendar_href; verify iCloud credentials and remove manual KV overrides.")
+
+    print("[calendar] missing calendar_href after ensure; resetting stored calendar metadata")
+    await update_settings(
+        bindings.state,
+        calendar_href=None,
+        calendar_name=None,
+        calendar_color=None,
+        event_hashes=None,
+        last_full_sync=None,
+    )
+    return await ensure_calendar(bindings, _reset_attempted=True)

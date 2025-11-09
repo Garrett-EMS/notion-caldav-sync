@@ -1,7 +1,9 @@
 from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import hashlib
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+from dateutil import parser as dtparser
 
 try:
     from .calendar import (
@@ -152,7 +154,7 @@ def _event_url(calendar_href: str, notion_id: str) -> str:
 
 
 def _build_ics_for_task(task: TaskInfo, calendar_color: str) -> str:
-    normalized_status = normalize_status_name(task.status) or "Todo"
+    normalized_status = _status_for_task(task)
     emoji = status_to_emoji(normalized_status) or status_to_emoji("Todo")
     return build_event(
         task.notion_id,
@@ -167,6 +169,62 @@ def _build_ics_for_task(task: TaskInfo, calendar_color: str) -> str:
         color=calendar_color,
         url=task.url or f"https://www.notion.so/{task.notion_id.replace('-', '')}",
     )
+
+
+def _status_for_task(task: TaskInfo) -> str:
+    normalized = normalize_status_name(task.status) or "Todo"
+    if _is_task_overdue(task):
+        return "Overdue"
+    return normalized
+
+
+_FINAL_STATUSES = {"Completed", "Cancelled"}
+
+
+def _is_task_overdue(task: TaskInfo) -> bool:
+    if not task.start_date and not task.end_date:
+        return False
+    if normalize_status_name(task.status) in _FINAL_STATUSES:
+        return False
+    due_source = task.end_date or task.start_date
+    all_day_due = _is_all_day_value(task.end_date) or (
+        not task.end_date and _is_all_day_value(task.start_date)
+    )
+    due_dt = _parse_iso_datetime(due_source, end_of_day_if_date_only=all_day_due)
+    if not due_dt:
+        return False
+    return due_dt < datetime.now(timezone.utc)
+
+
+def _is_all_day_value(value: Optional[str]) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip()
+    if not normalized:
+        return False
+    return "T" not in normalized
+
+
+def _parse_iso_datetime(
+    value: Optional[str], *, end_of_day_if_date_only: bool = False
+) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        parsed = dtparser.isoparse(value)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(parsed, datetime):
+        if (
+            end_of_day_if_date_only
+            and isinstance(value, str)
+            and "T" not in value
+        ):
+            parsed = parsed.replace(hour=23, minute=59, second=59)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    return None
 
 
 def _hash_ics_payload(ics: str) -> str:
@@ -203,7 +261,9 @@ def full_sync_due(settings: Dict[str, any]) -> bool:
 async def run_full_sync(bindings: Bindings) -> Dict[str, any]:
     print("[sync] starting full calendar rewrite")
     settings = await calendar_ensure(bindings)
-    calendar_href = settings["calendar_href"]
+    calendar_href = settings.get("calendar_href")
+    if not calendar_href:
+        raise RuntimeError("Calendar metadata missing; rerun /admin/settings to reinitialize the Notion calendar.")
     calendar_color = settings.get("calendar_color", DEFAULT_CALENDAR_COLOR)
     stored_hashes = settings.get("event_hashes")
     if not isinstance(stored_hashes, dict):
@@ -262,7 +322,9 @@ async def handle_webhook_tasks(bindings: Bindings, page_ids: List[str]) -> None:
     if not page_ids:
         return
     settings = await calendar_ensure(bindings)
-    calendar_href = settings["calendar_href"]
+    calendar_href = settings.get("calendar_href")
+    if not calendar_href:
+        raise RuntimeError("Calendar metadata missing; run /admin/full-sync to rebuild the Notion calendar.")
     calendar_color = settings.get("calendar_color", DEFAULT_CALENDAR_COLOR)
     for pid in page_ids:
         print(f"[sync] webhook update for page {pid}")
