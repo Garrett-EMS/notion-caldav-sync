@@ -8,16 +8,17 @@ from workers import Response
 
 try:
     from .config import get_bindings
-    from .engine import handle_webhook_tasks
+    from .engine import handle_webhook_tasks, run_full_sync
     from .stores import load_webhook_token, persist_webhook_token
 except ImportError:
     from config import get_bindings  # type: ignore
-    from engine import handle_webhook_tasks  # type: ignore
+    from engine import handle_webhook_tasks, run_full_sync  # type: ignore
     from stores import load_webhook_token, persist_webhook_token  # type: ignore
 
 
 _PAGE_ID_KEYS = {"page_id", "pageId"}
 _LOG_CHAR_LIMIT = 2000
+_FULL_SYNC_PREFIXES = ("database.", "data_source.")
 
 
 def _normalize_page_id(value: Any) -> Optional[str]:
@@ -76,6 +77,49 @@ def _collect_page_ids(payload: Any) -> List[str]:
         seen.add(pid)
         ordered.append(pid)
     return ordered
+
+
+def _extract_event_types(payload: Any) -> List[str]:
+    event_types: List[str] = []
+
+    def _append(value: Any) -> None:
+        if not isinstance(value, str):
+            return
+        normalized = value.strip().lower()
+        if not normalized:
+            return
+        if normalized not in event_types:
+            event_types.append(normalized)
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, dict):
+            if "type" in value:
+                _append(value.get("type"))
+            possible_event = value.get("event")
+            if isinstance(possible_event, dict):
+                _walk(possible_event)
+            possible_events = value.get("events")
+            if isinstance(possible_events, list):
+                for item in possible_events:
+                    _walk(item)
+            for key in ("payload", "data"):
+                nested = value.get(key)
+                if isinstance(nested, (dict, list)):
+                    _walk(nested)
+        elif isinstance(value, list):
+            for item in value:
+                _walk(item)
+
+    _walk(payload)
+    return event_types
+
+
+def _needs_full_sync(event_types: Iterable[str]) -> bool:
+    for etype in event_types:
+        for prefix in _FULL_SYNC_PREFIXES:
+            if etype.startswith(prefix):
+                return True
+    return False
 
 
 def _format_payload_for_log(raw: str, data: Any) -> str:
@@ -151,6 +195,11 @@ async def handle(request, env, ctx=None):
     if not hmac.compare_digest(calc, sig):
         return Response("Unauthorized - Invalid signature", status=401)
     
+    event_types = _extract_event_types(data)
+    if _needs_full_sync(event_types):
+        print("[Webhook] database/data_source event detected; running full sync")
+        await run_full_sync(bindings)
+
     page_ids: List[str] = _collect_page_ids(data)
     _log_payload(raw, data, page_ids)
     await handle_webhook_tasks(bindings, page_ids)

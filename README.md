@@ -23,11 +23,6 @@ Create a `.env` (used locally and when running `pywrangler secret put`):
 | `APPLE_ID` / `APPLE_APP_PASSWORD` | iCloud Calendar credentials |
 
 When Notion first performs the webhook verification handshake, the worker automatically persists the provided verification token into KV and uses it for all future signature checks—no manual secret management required.
-### Create the KV namespace once
-```bash
-uv run -- pywrangler kv namespace create --namespace "notion-caldav-sync-STATE"
-```
-Copy the returned ID into `CLOUDFLARE_STATE_NAMESPACE`.
 
 ## Deployment
 ```bash
@@ -43,9 +38,7 @@ chmod a+x deploy.sh
 
 The script ensures `wrangler.toml` matches your KV namespace, prompts for secrets via `pywrangler`, and deploys the Worker. Update your Notion webhook URL to the production Worker afterwards.
 
-Pywrangler automatically bundles your project code and dependencies during `dev`/`deploy` (see Cloudflare’s [Python packages guide](https://developers.cloudflare.com/workers/languages/python/packages)).
-
-## Create the Notion integration
+## Notion integration
 1. Visit [Notion Developers → My integrations](https://www.notion.so/my-integrations) and create a new integration.
 2. **Basics**
    - **Integration name:** `Notion → iCloud Calendar` (any meaningful name works)
@@ -62,10 +55,9 @@ Pywrangler automatically bundles your project code and dependencies during `dev`
 6. Save the integration and copy the generated secret into `.env` as `NOTION_TOKEN`.
 
 ## Useful HTTP endpoints
-- Manual full rewrite: `curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" http://localhost:8787/admin/full-sync`
-- Settings view/update: `curl -H "X-Admin-Token: $ADMIN_TOKEN" http://localhost:8787/admin/settings`
-- Debug info: `curl -H "X-Admin-Token: $ADMIN_TOKEN" http://localhost:8787/admin/debug`
-
+- Settings view: `curl -H "X-Admin-Token: $ADMIN_TOKEN" https://<worker-url>/admin/settings`
+- Manual full sync: `curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" https://<worker-url>/admin/full-sync`
+- Debug info: `curl -H "X-Admin-Token: $ADMIN_TOKEN" https://<worker-url>/admin/debug`
 
 ## Testing
 All tests hit live APIs, so use staging credentials.
@@ -76,10 +68,19 @@ uv run python -m tests.cli full --env-file .env
 ```
 
 ## Notes
-- Only tasks with a start date sync; undated pages are skipped.
+- Only tasks with a start date will sync; undated pages are skipped.
 - The worker stores only calendar metadata (`calendar_href`, `calendar_name`, `calendar_color`, `full_sync_interval_minutes`, `event_hashes`, `last_full_sync`, `webhook_verification_token`) in KV.
 - Rename/recolour the iCloud calendar directly—the worker reuses those values from KV.
 - Cron runs every 30 minutes (see `wrangler.toml`). The actual rewrite occurs when `full_sync_interval_minutes` (stored in KV via `/admin/settings`) has elapsed.
+- Status emojis embedded in ICS titles map to the canonical task states:
+
+  | Status | Emoji |
+  | --- | --- |
+  | Todo | ⬜ |
+  | In progress | ⚙️ |
+  | Completed | ✅ |
+  | Overdue | ⚠️ |
+  | Cancelled | ❌ |
 
 ## License
 MIT – see `LICENSE`.

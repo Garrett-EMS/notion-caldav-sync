@@ -329,9 +329,15 @@ async def handle_webhook_tasks(bindings: Bindings, page_ids: List[str]) -> None:
     for pid in page_ids:
         print(f"[sync] webhook update for page {pid}")
         page = await get_page(bindings.notion_token, NOTION_VERSION, pid)
+        if not page or page.get("object") == "error":
+            await _delete_task_event(bindings, calendar_href, pid)
+            print(f"[sync] deleted event for {pid} (page missing)")
+            continue
         parent = page.get("parent") or {}
         database_id = parent.get("database_id")
         if not database_id:
+            await _delete_task_event(bindings, calendar_href, pid)
+            print(f"[sync] deleted event for {pid} (missing parent database)")
             continue
         task = parse_page_to_task(page)
         if page.get("archived") or not task.start_date:

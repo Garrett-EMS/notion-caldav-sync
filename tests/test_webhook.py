@@ -164,3 +164,36 @@ async def test_events_value_with_page_object_detected(monkeypatch: pytest.Monkey
 
     assert resp.status == 200
     assert captured["page_ids"] == [notion_page_id]
+
+
+@pytest.mark.asyncio
+async def test_database_event_triggers_full_sync(monkeypatch: pytest.MonkeyPatch):
+    state = FakeState()
+    await state.put("settings:value:webhook_verification_token", json.dumps("secret_token"))
+    env = FakeEnv(state)
+
+    called: Dict[str, Any] = {}
+
+    async def _fake_handle(bindings, page_ids):
+        called["page_ids"] = page_ids
+
+    async def _fake_full_sync(bindings):
+        called["full_sync"] = called.get("full_sync", 0) + 1
+
+    monkeypatch.setattr(webhook, "handle_webhook_tasks", _fake_handle)
+    monkeypatch.setattr(webhook, "run_full_sync", _fake_full_sync)
+
+    event_body = json.dumps({
+        "events": [
+            {"type": "database.schema.updated"},
+            {"type": "data_source.moved"},
+        ]
+    })
+    signature = "sha256=" + hmac.new("secret_token".encode(), event_body.encode(), hashlib.sha256).hexdigest()
+    request = FakeRequest(event_body, headers={"X-Notion-Signature": signature})
+
+    resp = await webhook.handle(request, env)
+
+    assert resp.status == 200
+    assert called.get("full_sync") == 1
+    assert called.get("page_ids") == []

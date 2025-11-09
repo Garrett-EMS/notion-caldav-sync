@@ -8,4 +8,4 @@ binding = "STATE"
 id = "${CLOUDFLARE_STATE_NAMESPACE}"
 
 [triggers]
-crons = ["*/30 * * * *"]
+crons = ["*/5 * * * *"]
