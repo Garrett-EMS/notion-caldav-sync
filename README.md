@@ -41,7 +41,7 @@ The script ensures `wrangler.toml` matches your KV namespace, prompts for secret
 ## Notion integration
 1. Visit [Notion Developers → My integrations](https://www.notion.so/my-integrations) and create a new integration.
 2. **Basics**
-   - **Integration name:** `Notion → iCloud Calendar` (any meaningful name works)
+   - **Integration name:** `iCloud Calendar` (any meaningful name works)
    - **Workspace:** select the workspace that owns your task databases
 3. **Capabilities**
    - **Content:** enable only *Read content*
