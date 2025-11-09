@@ -1,0 +1,13 @@
+.venv*/
+.env
+.DS_Store
+uv.lock
+__pycache__/
+.mf/
+.ruff_cache/
+.pytest_cache/
+.wrangler/
+node_modules/
+python_modules/
+dist/
+wrangler.toml
