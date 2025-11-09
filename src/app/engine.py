@@ -23,6 +23,7 @@ try:
     )
     from .ics import build_event
     from .notion import (
+        extract_database_title,
         get_database_properties,
         get_database_title,
         get_page,
@@ -30,6 +31,7 @@ try:
         parse_page_to_task,
         query_database_pages,
     )
+    from .logger import log
     from .stores import update_settings
     from .task import TaskInfo
 except ImportError:  # pragma: no cover - flat module fallback
@@ -59,6 +61,7 @@ except ImportError:  # pragma: no cover - flat module fallback
     _notion = _load_local("notion")
     _stores = _load_local("stores")
     _task = _load_local("task")
+    _logger = _load_local("logger")
 
     calendar_delete_event = _calendar.delete_event
     calendar_ensure = _calendar.ensure_calendar
@@ -77,6 +80,7 @@ except ImportError:  # pragma: no cover - flat module fallback
 
     build_event = _ics.build_event
 
+    extract_database_title = _notion.extract_database_title
     get_database_properties = _notion.get_database_properties
     get_database_title = _notion.get_database_title
     get_page = _notion.get_page
@@ -86,6 +90,7 @@ except ImportError:  # pragma: no cover - flat module fallback
 
     update_settings = _stores.update_settings
     TaskInfo = _task.TaskInfo
+    log = _logger.log
 
 
 async def _filter_task_databases(bindings: Bindings, databases: List[Dict]) -> List[Dict]:
@@ -94,7 +99,11 @@ async def _filter_task_databases(bindings: Bindings, databases: List[Dict]) -> L
         db_id = db.get("id")
         if not db_id:
             continue
-        props = await get_database_properties(bindings.notion_token, NOTION_VERSION, db_id)
+        try:
+            props = await get_database_properties(bindings.notion_token, NOTION_VERSION, db_id)
+        except RuntimeError as exc:
+            log(f"[notion] skipping data source {db_id}: {exc}")
+            continue
         if not is_task_properties(props):
             continue
         task_dbs.append(db)
@@ -102,25 +111,10 @@ async def _filter_task_databases(bindings: Bindings, databases: List[Dict]) -> L
 
 
 def _resolve_database_title(db: Dict) -> str:
-    raw_title = (
-        db.get("title")
-        or db.get("name")
-        or db.get("display_name")
-        or db.get("database_name")
-        or db.get("id")
-    )
-    if isinstance(raw_title, list):
-        for item in raw_title:
-            if isinstance(item, dict):
-                text = item.get("plain_text") or item.get("text", {}).get("content")
-                if text:
-                    return str(text)
-            elif isinstance(item, str):
-                return item
-        return str(db.get("id"))
-    if isinstance(raw_title, dict):
-        return raw_title.get("plain_text") or raw_title.get("text", {}).get("content") or str(db.get("id"))
-    return str(raw_title)
+    extracted = extract_database_title(db)
+    if extracted:
+        return extracted
+    return str(db.get("id"))
 
 
 async def _collect_tasks(bindings: Bindings) -> List[TaskInfo]:
@@ -132,7 +126,11 @@ async def _collect_tasks(bindings: Bindings) -> List[TaskInfo]:
         if not db_id:
             continue
         pages = await query_database_pages(bindings.notion_token, NOTION_VERSION, db_id)
-        db_title = _resolve_database_title(db)
+        try:
+            db_title = await get_database_title(bindings.notion_token, NOTION_VERSION, db_id)
+        except RuntimeError as exc:
+            log(f"[notion] unable to load title for data source {db_id}: {exc}")
+            db_title = _resolve_database_title(db)
         for page in pages:
             task = parse_page_to_task(page)
             task.database_name = db_title
@@ -259,30 +257,21 @@ def full_sync_due(settings: Dict[str, any]) -> bool:
 
 
 async def run_full_sync(bindings: Bindings) -> Dict[str, any]:
-    print("[sync] starting full calendar rewrite")
+    log("[sync] starting full calendar rewrite")
     settings = await calendar_ensure(bindings)
     calendar_href = settings.get("calendar_href")
     if not calendar_href:
         raise RuntimeError("Calendar metadata missing; rerun /admin/settings to reinitialize the Notion calendar.")
     calendar_color = settings.get("calendar_color", DEFAULT_CALENDAR_COLOR)
-    stored_hashes = settings.get("event_hashes")
-    if not isinstance(stored_hashes, dict):
-        stored_hashes = {}
     existing_events = await calendar_list_events(
         calendar_href,
         bindings.apple_id,
         bindings.apple_app_password,
     )
-    existing_ids = {
-        str(evt.get("notion_id"))
-        for evt in existing_events
-        if isinstance(evt, dict) and evt.get("notion_id")
-    }
     tasks = await _collect_tasks(bindings)
     updated_ids: List[str] = []
     updated_hashes: Dict[str, str] = {}
     writes = 0
-    skips = 0
     for task in tasks:
         if not task.start_date:
             continue
@@ -290,15 +279,9 @@ async def run_full_sync(bindings: Bindings) -> Dict[str, any]:
             continue
         ics = _build_ics_for_task(task, calendar_color)
         payload_hash = _hash_ics_payload(ics)
-        previous_hash = stored_hashes.get(task.notion_id)
-        exists_remotely = task.notion_id in existing_ids
-        if previous_hash != payload_hash or not exists_remotely:
-            event_url = _event_url(calendar_href, task.notion_id)
-            await calendar_put_event(event_url, ics, bindings.apple_id, bindings.apple_app_password)
-            existing_ids.add(task.notion_id)
-            writes += 1
-        else:
-            skips += 1
+        event_url = _event_url(calendar_href, task.notion_id)
+        await calendar_put_event(event_url, ics, bindings.apple_id, bindings.apple_app_password)
+        writes += 1
         updated_ids.append(task.notion_id)
         updated_hashes[task.notion_id] = payload_hash
     await calendar_remove_missing_events(
@@ -314,7 +297,8 @@ async def run_full_sync(bindings: Bindings) -> Dict[str, any]:
         last_full_sync=now,
         event_hashes=updated_hashes,
     )
-    print(f"[sync] full rewrite finished (events={len(updated_ids)} writes={writes} skips={skips})")
+    summary = f"[sync] full rewrite finished (events={len(updated_ids)} writes={writes})"
+    log(summary)
     return settings
 
 
@@ -327,27 +311,27 @@ async def handle_webhook_tasks(bindings: Bindings, page_ids: List[str]) -> None:
         raise RuntimeError("Calendar metadata missing; run /admin/full-sync to rebuild the Notion calendar.")
     calendar_color = settings.get("calendar_color", DEFAULT_CALENDAR_COLOR)
     for pid in page_ids:
-        print(f"[sync] webhook update for page {pid}")
+        log(f"[sync] webhook update for page {pid}")
         page = await get_page(bindings.notion_token, NOTION_VERSION, pid)
         if not page or page.get("object") == "error":
             await _delete_task_event(bindings, calendar_href, pid)
-            print(f"[sync] deleted event for {pid} (page missing)")
+            log(f"[sync] deleted event for {pid} (page missing)")
             continue
         parent = page.get("parent") or {}
-        database_id = parent.get("database_id")
+        database_id = parent.get("data_source_id") or parent.get("database_id")
         if not database_id:
             await _delete_task_event(bindings, calendar_href, pid)
-            print(f"[sync] deleted event for {pid} (missing parent database)")
+            log(f"[sync] deleted event for {pid} (missing parent database)")
             continue
         task = parse_page_to_task(page)
         if page.get("archived") or not task.start_date:
             await _delete_task_event(bindings, calendar_href, task.notion_id)
-            print(f"[sync] deleted event for {task.notion_id}")
+            log(f"[sync] deleted event for {task.notion_id}")
             continue
         db_title = await get_database_title(bindings.notion_token, NOTION_VERSION, database_id)
         task.database_name = db_title
         await _write_task_event(bindings, calendar_href, calendar_color, task)
-        print(f"[sync] wrote event for {task.notion_id}")
+        log(f"[sync] wrote event for {task.notion_id}")
 
 
 async def ensure_calendar(bindings: Bindings) -> Dict[str, str]:

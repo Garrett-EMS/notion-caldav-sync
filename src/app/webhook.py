@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -9,16 +10,19 @@ from workers import Response
 try:
     from .config import get_bindings
     from .engine import handle_webhook_tasks, run_full_sync
+    from .logger import log
     from .stores import load_webhook_token, persist_webhook_token
 except ImportError:
     from config import get_bindings  # type: ignore
     from engine import handle_webhook_tasks, run_full_sync  # type: ignore
+    from logger import log  # type: ignore
     from stores import load_webhook_token, persist_webhook_token  # type: ignore
 
 
 _PAGE_ID_KEYS = {"page_id", "pageId"}
 _LOG_CHAR_LIMIT = 2000
 _FULL_SYNC_PREFIXES = ("database.", "data_source.")
+_FULL_SYNC_TASK: Optional[asyncio.Task] = None
 
 
 def _normalize_page_id(value: Any) -> Optional[str]:
@@ -122,6 +126,27 @@ def _needs_full_sync(event_types: Iterable[str]) -> bool:
     return False
 
 
+def _schedule_background_full_sync(bindings) -> Optional[asyncio.Task]:
+    """Kick off a full sync without blocking the webhook response."""
+    global _FULL_SYNC_TASK
+    if _FULL_SYNC_TASK and not _FULL_SYNC_TASK.done():
+        log("[Webhook] full sync already running; skipping new kickoff")
+        return _FULL_SYNC_TASK
+
+    async def _runner() -> None:
+        global _FULL_SYNC_TASK
+        try:
+            await run_full_sync(bindings)
+        except Exception as exc:  # pragma: no cover - surfaced inside Workers logs
+            log(f"[Webhook] background full sync failed: {exc}")
+        finally:
+            _FULL_SYNC_TASK = None
+
+    loop = asyncio.get_running_loop()
+    _FULL_SYNC_TASK = loop.create_task(_runner())
+    return _FULL_SYNC_TASK
+
+
 def _format_payload_for_log(raw: str, data: Any) -> str:
     if isinstance(data, (dict, list)):
         try:
@@ -143,7 +168,7 @@ def _format_payload_for_log(raw: str, data: Any) -> str:
 def _log_payload(raw: str, data: Any, page_ids: Iterable[str]) -> None:
     snapshot = _format_payload_for_log(raw, data)
     pid_list = list(page_ids)
-    print(f"[Webhook] payload: {snapshot} :: page_ids={pid_list or []}")
+    log(f"[Webhook] payload: {snapshot} :: page_ids={pid_list or []}")
 
 
 async def handle(request, env, ctx=None):
@@ -168,12 +193,12 @@ async def handle(request, env, ctx=None):
         if not verification_token:
             return Response("Invalid verification_token", status=400)
         await persist_webhook_token(bindings.state, verification_token)
-        print("[Webhook] Stored verification token from Notion")
+        log("[Webhook] Stored verification token from Notion")
         response_body = json.dumps({"verification_token": verification_token})
         return Response(response_body, headers={"Content-Type": "application/json"})
 
     if data is None:
-        print("[Webhook] ERROR: Invalid JSON")
+        log("[Webhook] ERROR: Invalid JSON")
         return Response("Invalid JSON", status=400)
 
     stored_token = await load_webhook_token(bindings.state)
@@ -197,8 +222,8 @@ async def handle(request, env, ctx=None):
     
     event_types = _extract_event_types(data)
     if _needs_full_sync(event_types):
-        print("[Webhook] database/data_source event detected; running full sync")
-        await run_full_sync(bindings)
+        log("[Webhook] database/data_source event detected; running full sync")
+        _schedule_background_full_sync(bindings)
 
     page_ids: List[str] = _collect_page_ids(data)
     _log_payload(raw, data, page_ids)

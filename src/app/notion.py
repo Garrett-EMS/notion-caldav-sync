@@ -1,5 +1,10 @@
 import json
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
+try:
+    from .logger import log
+except ImportError:  # pragma: no cover
+    from logger import log  # type: ignore
 
 try:
     from .constants import (
@@ -28,11 +33,6 @@ except ImportError:  # pragma: no cover
     from task import TaskInfo  # type: ignore
     from http_client import http_json  # type: ignore
 
-
-def _use_data_sources(api_version: str) -> bool:
-    return api_version >= "2025-09-03"
-
-
 def _headers(token: str, api_version: str) -> Dict[str, str]:
     return {
         "Authorization": f"Bearer {token}",
@@ -41,11 +41,81 @@ def _headers(token: str, api_version: str) -> Dict[str, str]:
     }
 
 
+def _resolve_data_source_id(meta: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(meta, dict):
+        return None
+    data_source = meta.get("data_source")
+    if isinstance(data_source, dict):
+        candidate = data_source.get("id") or data_source.get("data_source_id")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate
+    candidate = meta.get("data_source_id")
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate
+    candidate = meta.get("id")
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate
+    return None
+
+
+def _rich_text_to_plain(value: Any) -> Optional[str]:
+    if isinstance(value, list):
+        for item in value:
+            text = _rich_text_to_plain(item)
+            if text:
+                return text
+        return None
+    if isinstance(value, dict):
+        text = value.get("plain_text")
+        if text:
+            return str(text).strip() or None
+        text = (value.get("text") or {}).get("content")
+        if text:
+            return str(text).strip() or None
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return None
+
+
+def extract_database_title(meta: Dict) -> Optional[str]:
+    if not isinstance(meta, dict):
+        return None
+    data_source = meta.get("data_source") or {}
+    rich_text_candidates = [
+        meta.get("title"),
+        data_source.get("title"),
+        meta.get("name_rich_text"),
+        data_source.get("name_rich_text"),
+        meta.get("name"),
+        data_source.get("name"),
+    ]
+    for candidate in rich_text_candidates:
+        text = _rich_text_to_plain(candidate)
+        if text:
+            return text
+    string_candidates = [
+        meta.get("name"),
+        data_source.get("name"),
+        meta.get("display_name"),
+        meta.get("displayName"),
+        data_source.get("display_name"),
+        data_source.get("displayName"),
+        meta.get("database_name"),
+    ]
+    for candidate in string_candidates:
+        if isinstance(candidate, str):
+            stripped = candidate.strip()
+            if stripped:
+                return stripped
+    return None
+
+
 async def list_databases(token: str, api_version: str) -> List[Dict[str, str]]:
     results: List[Dict[str, str]] = []
-    filter_value = "data_source" if _use_data_sources(api_version) else "database"
     body = {
-        "filter": {"property": "object", "value": filter_value},
+        "filter": {"property": "object", "value": "data_source"},
         "page_size": NOTION_DB_PAGE_SIZE,
     }
     next_cursor: Optional[str] = None
@@ -60,14 +130,10 @@ async def list_databases(token: str, api_version: str) -> List[Dict[str, str]]:
         )
         data = response.get("json") or {}
         for db in data.get("results", []):
-            title = ""
-            title_arr = db.get("title", [])
-            if not title_arr and isinstance(db.get("data_source"), dict):
-                title_arr = db["data_source"].get("title", [])
-            if title_arr:
-                title = title_arr[0].get("plain_text") or title_arr[0].get("text", {}).get("content", "")
-            db_id = db.get("id") or ((db.get("data_source") or {}).get("id"))
+            title = extract_database_title(db)
+            db_id = _resolve_data_source_id(db)
             if not db_id:
+                log("[notion] skipping search result without data_source id")
                 continue
             results.append({"id": db_id, "title": title or "Untitled"})
         if not data.get("has_more"):
@@ -79,29 +145,37 @@ async def list_databases(token: str, api_version: str) -> List[Dict[str, str]]:
     return results
 
 
-async def get_database(token: str, api_version: str, database_id: str) -> Dict:
-    if _use_data_sources(api_version):
-        url = f"https://api.notion.com/v1/data_sources/{database_id}"
-    else:
-        url = f"https://api.notion.com/v1/databases/{database_id}"
+async def _fetch_data_source_metadata(token: str, api_version: str, identifier: str) -> Optional[Dict]:
+    url = f"https://api.notion.com/v1/data_sources/{identifier}"
     response = await http_json(url, headers=_headers(token, api_version))
-    return response.get("json") or {}
+    data = response.get("json") or {}
+    if data.get("object") == "error":
+        return None
+    return data
+
+
+async def get_database(token: str, api_version: str, database_id: str) -> Dict:
+    data_source = await _fetch_data_source_metadata(token, api_version, database_id)
+    if data_source:
+        return data_source
+    raise RuntimeError(f"Data source {database_id} not found")
 
 
 async def get_database_title(token: str, api_version: str, database_id: str) -> str:
     database = await get_database(token, api_version, database_id)
-    if _use_data_sources(api_version):
-        title_entries = (database.get("title") or [])
-    else:
-        title_entries = database.get("title") or []
-    for entry in title_entries:
-        text = entry.get("plain_text") or entry.get("text", {}).get("content")
-        if text:
-            return str(text)
-    name = database.get("name")
-    if isinstance(name, str) and name:
-        return name
-    return database.get("id") or "Untitled"
+    title = extract_database_title(database)
+    if title:
+        return title
+    data_source = database.get("data_source") or {}
+    fallback = (
+        data_source.get("name")
+        or data_source.get("displayName")
+        or database.get("name")
+        or database.get("displayName")
+    )
+    if isinstance(fallback, str) and fallback.strip():
+        return fallback.strip()
+    return database.get("id") or data_source.get("id") or "Untitled"
 
 async def get_database_properties(token: str, api_version: str, database_id: str) -> Dict[str, dict]:
     data = await get_database(token, api_version, database_id)
@@ -115,25 +189,11 @@ async def query_database_pages(token: str, api_version: str, database_id: str) -
     next_cursor: Optional[str] = None
     while True:
         body = {
-            "page_size": NOTION_DB_PAGE_SIZE,
-            "filter_properties": [
-                TITLE_PROPERTY,
-                STATUS_PROPERTY,
-                DATE_PROPERTY,
-                REMINDER_PROPERTY,
-                CATEGORY_PROPERTY,
-                DESCRIPTION_PROPERTY,
-            ],
+            "page_size": NOTION_DS_PAGE_SIZE,
         }
-        if _use_data_sources(api_version):
-            body.pop("filter_properties", None)
-            body["page_size"] = NOTION_DS_PAGE_SIZE
         if next_cursor:
             body["start_cursor"] = next_cursor
-        if _use_data_sources(api_version):
-            url = f"https://api.notion.com/v1/data_sources/{database_id}/query"
-        else:
-            url = f"https://api.notion.com/v1/databases/{database_id}/query"
+        url = f"https://api.notion.com/v1/data_sources/{database_id}/query"
         response = await http_json(
             url,
             method="POST",

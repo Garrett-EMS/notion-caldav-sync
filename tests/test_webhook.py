@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -59,6 +60,13 @@ def _patch_response(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(webhook, "Response", DummyResponse)
     return DummyResponse
+
+
+@pytest.fixture(autouse=True)
+def _reset_full_sync_task():
+    webhook._FULL_SYNC_TASK = None
+    yield
+    webhook._FULL_SYNC_TASK = None
 
 
 @pytest.mark.asyncio
@@ -195,5 +203,8 @@ async def test_database_event_triggers_full_sync(monkeypatch: pytest.MonkeyPatch
     resp = await webhook.handle(request, env)
 
     assert resp.status == 200
+    task = webhook._FULL_SYNC_TASK
+    assert task is not None
+    await asyncio.wait_for(task, timeout=0.1)
     assert called.get("full_sync") == 1
     assert called.get("page_ids") == []
