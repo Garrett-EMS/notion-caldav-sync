@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from dateutil import tz
 
 from src.app.config import NOTION_VERSION
 from src.app.engine import (
@@ -65,6 +66,52 @@ def test_status_for_task_respects_completed_states():
         start_date=past,
     )
     assert _status_for_task(task) == "Completed"
+
+
+def test_all_day_overdue_uses_calendar_timezone(monkeypatch: pytest.MonkeyPatch):
+    fixed_now = datetime(2025, 11, 10, 18, 0, tzinfo=timezone.utc)
+    real_datetime = datetime
+
+    class _FixedDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            if tz is None:
+                return fixed_now.replace(tzinfo=None)
+            return fixed_now.astimezone(tz)
+
+    monkeypatch.setattr("src.app.engine.datetime", _FixedDatetime)
+
+    from src.app import engine as engine_module  # local import for patching
+
+    real_isoparse = engine_module.dtparser.isoparse
+
+    def _fake_isoparse(value):
+        result = real_isoparse(value)
+        if isinstance(result, real_datetime):
+            return _FixedDatetime(
+                result.year,
+                result.month,
+                result.day,
+                result.hour,
+                result.minute,
+                result.second,
+                result.microsecond,
+                tzinfo=result.tzinfo,
+            )
+        return result
+
+    monkeypatch.setattr("src.app.engine.dtparser.isoparse", _fake_isoparse)
+    shanghai = tz.gettz("Asia/Shanghai")
+    if shanghai is None:
+        pytest.skip("dateutil tz database missing")
+    task = TaskInfo(
+        notion_id="abc",
+        title="Floating",
+        status="In progress",
+        start_date="2025-11-10",
+    )
+    assert _status_for_task(task, date_only_tz=shanghai) == "Overdue"
+    assert _status_for_task(task) == "In progress"
 
 
 class _DummyBindings:
@@ -201,7 +248,7 @@ async def test_handle_webhook_tasks_accepts_data_source_parent(monkeypatch: pyte
             url="https://www.notion.so/page",
         )
 
-    async def _fake_write(bindings, calendar_href, calendar_color, task):
+    async def _fake_write(bindings, calendar_href, calendar_color, task, *, date_only_tz):
         writes.append(task.database_name)
         assert calendar_href == "https://calendar"
 

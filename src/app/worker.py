@@ -93,6 +93,10 @@ class Default(WorkerEntrypoint):
                     updates["calendar_name"] = str(payload["calendar_name"]).strip() or None
                 if "calendar_color" in payload:
                     updates["calendar_color"] = str(payload["calendar_color"]).strip() or None
+                if "calendar_timezone" in payload:
+                    updates["calendar_timezone"] = str(payload["calendar_timezone"]).strip() or None
+                if "date_only_timezone" in payload:
+                    updates["date_only_timezone"] = str(payload["date_only_timezone"]).strip() or None
                 if "full_sync_interval_minutes" in payload:
                     try:
                         minutes = int(payload["full_sync_interval_minutes"])

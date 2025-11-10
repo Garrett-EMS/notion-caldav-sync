@@ -1,9 +1,9 @@
 from __future__ import annotations
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 import hashlib
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from dateutil import parser as dtparser
+from dateutil import parser as dtparser, tz as datetz
 
 try:
     from .calendar import (
@@ -138,6 +138,23 @@ async def _collect_tasks(bindings: Bindings) -> List[TaskInfo]:
     return tasks
 
 
+def _date_only_timezone(settings: Optional[Dict[str, Any]]) -> tzinfo:
+    tz_name: Optional[str] = None
+    if isinstance(settings, dict):
+        override = settings.get("date_only_timezone")
+        if isinstance(override, str) and override.strip():
+            tz_name = override.strip()
+        else:
+            calendar_tz = settings.get("calendar_timezone")
+            if isinstance(calendar_tz, str) and calendar_tz.strip():
+                tz_name = calendar_tz.strip()
+    if tz_name:
+        candidate = datetz.gettz(tz_name)
+        if candidate:
+            return candidate
+    return timezone.utc
+
+
 def _description_for_task(task: TaskInfo) -> str:
     parts = [f"Source: {task.database_name or '-'}"]
     if task.category:
@@ -151,8 +168,8 @@ def _event_url(calendar_href: str, notion_id: str) -> str:
     return calendar_href.rstrip("/") + f"/{notion_id}.ics"
 
 
-def _build_ics_for_task(task: TaskInfo, calendar_color: str) -> str:
-    normalized_status = _status_for_task(task)
+def _build_ics_for_task(task: TaskInfo, calendar_color: str, *, date_only_tz: tzinfo) -> str:
+    normalized_status = _status_for_task(task, date_only_tz=date_only_tz)
     emoji = status_to_emoji(normalized_status) or status_to_emoji("Todo")
     return build_event(
         task.notion_id,
@@ -169,9 +186,9 @@ def _build_ics_for_task(task: TaskInfo, calendar_color: str) -> str:
     )
 
 
-def _status_for_task(task: TaskInfo) -> str:
+def _status_for_task(task: TaskInfo, *, date_only_tz: tzinfo = timezone.utc) -> str:
     normalized = normalize_status_name(task.status) or "Todo"
-    if _is_task_overdue(task):
+    if _is_task_overdue(task, date_only_tz=date_only_tz):
         return "Overdue"
     return normalized
 
@@ -179,7 +196,7 @@ def _status_for_task(task: TaskInfo) -> str:
 _FINAL_STATUSES = {"Completed", "Cancelled"}
 
 
-def _is_task_overdue(task: TaskInfo) -> bool:
+def _is_task_overdue(task: TaskInfo, *, date_only_tz: tzinfo = timezone.utc) -> bool:
     if not task.start_date and not task.end_date:
         return False
     if normalize_status_name(task.status) in _FINAL_STATUSES:
@@ -188,7 +205,11 @@ def _is_task_overdue(task: TaskInfo) -> bool:
     all_day_due = _is_all_day_value(task.end_date) or (
         not task.end_date and _is_all_day_value(task.start_date)
     )
-    due_dt = _parse_iso_datetime(due_source, end_of_day_if_date_only=all_day_due)
+    due_dt = _parse_iso_datetime(
+        due_source,
+        end_of_day_if_date_only=all_day_due,
+        date_only_tz=date_only_tz,
+    )
     if not due_dt:
         return False
     return due_dt < datetime.now(timezone.utc)
@@ -204,7 +225,7 @@ def _is_all_day_value(value: Optional[str]) -> bool:
 
 
 def _parse_iso_datetime(
-    value: Optional[str], *, end_of_day_if_date_only: bool = False
+    value: Optional[str], *, end_of_day_if_date_only: bool = False, date_only_tz: tzinfo = timezone.utc
 ) -> Optional[datetime]:
     if not value:
         return None
@@ -213,14 +234,12 @@ def _parse_iso_datetime(
     except (ValueError, TypeError):
         return None
     if isinstance(parsed, datetime):
-        if (
-            end_of_day_if_date_only
-            and isinstance(value, str)
-            and "T" not in value
-        ):
+        is_date_only_value = isinstance(value, str) and "T" not in value
+        if end_of_day_if_date_only and is_date_only_value:
             parsed = parsed.replace(hour=23, minute=59, second=59)
         if parsed.tzinfo is None:
-            return parsed.replace(tzinfo=timezone.utc)
+            tzinfo = date_only_tz if is_date_only_value else timezone.utc
+            parsed = parsed.replace(tzinfo=tzinfo)
         return parsed.astimezone(timezone.utc)
     return None
 
@@ -229,12 +248,19 @@ def _hash_ics_payload(ics: str) -> str:
     return hashlib.sha256(ics.encode("utf-8")).hexdigest()
 
 
-async def _write_task_event(bindings: Bindings, calendar_href: str, calendar_color: str, task: TaskInfo) -> None:
+async def _write_task_event(
+    bindings: Bindings,
+    calendar_href: str,
+    calendar_color: str,
+    task: TaskInfo,
+    *,
+    date_only_tz: tzinfo,
+) -> None:
     if not task.start_date:
         return
     if not task.notion_id:
         return
-    ics = _build_ics_for_task(task, calendar_color)
+    ics = _build_ics_for_task(task, calendar_color, date_only_tz=date_only_tz)
     event_url = _event_url(calendar_href, task.notion_id)
     await calendar_put_event(event_url, ics, bindings.apple_id, bindings.apple_app_password)
 
@@ -263,6 +289,7 @@ async def run_full_sync(bindings: Bindings) -> Dict[str, any]:
     if not calendar_href:
         raise RuntimeError("Calendar metadata missing; rerun /admin/settings to reinitialize the Notion calendar.")
     calendar_color = settings.get("calendar_color", DEFAULT_CALENDAR_COLOR)
+    date_only_tz = _date_only_timezone(settings)
     existing_events = await calendar_list_events(
         calendar_href,
         bindings.apple_id,
@@ -277,7 +304,7 @@ async def run_full_sync(bindings: Bindings) -> Dict[str, any]:
             continue
         if not task.notion_id:
             continue
-        ics = _build_ics_for_task(task, calendar_color)
+        ics = _build_ics_for_task(task, calendar_color, date_only_tz=date_only_tz)
         payload_hash = _hash_ics_payload(ics)
         event_url = _event_url(calendar_href, task.notion_id)
         await calendar_put_event(event_url, ics, bindings.apple_id, bindings.apple_app_password)
@@ -310,6 +337,7 @@ async def handle_webhook_tasks(bindings: Bindings, page_ids: List[str]) -> None:
     if not calendar_href:
         raise RuntimeError("Calendar metadata missing; run /admin/full-sync to rebuild the Notion calendar.")
     calendar_color = settings.get("calendar_color", DEFAULT_CALENDAR_COLOR)
+    date_only_tz = _date_only_timezone(settings)
     for pid in page_ids:
         log(f"[sync] webhook update for page {pid}")
         page = await get_page(bindings.notion_token, NOTION_VERSION, pid)
@@ -330,7 +358,13 @@ async def handle_webhook_tasks(bindings: Bindings, page_ids: List[str]) -> None:
             continue
         db_title = await get_database_title(bindings.notion_token, NOTION_VERSION, database_id)
         task.database_name = db_title
-        await _write_task_event(bindings, calendar_href, calendar_color, task)
+        await _write_task_event(
+            bindings,
+            calendar_href,
+            calendar_color,
+            task,
+            date_only_tz=date_only_tz,
+        )
         log(f"[sync] wrote event for {task.notion_id}")
 
 

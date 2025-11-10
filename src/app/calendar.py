@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html
+import re
 from typing import Dict, List, Optional, Sequence
 from urllib.parse import urlparse, urljoin
 
@@ -84,6 +86,10 @@ except ImportError:  # pragma: no cover - flat module fallback
     HAS_NATIVE_WEBDAV = _webdav.HAS_NATIVE_WEBDAV
 
 
+_TZID_REGEX = re.compile(r"TZID(?:;[^:]+)?:([^\r\n]+)")
+_X_WR_TZ_REGEX = re.compile(r"X-WR-TIMEZONE(?:;[^:]+)?:([^\r\n]+)")
+
+
 def _normalize_calendar_color(color: Optional[str]) -> Optional[str]:
     if not color:
         return None
@@ -140,12 +146,29 @@ async def _apply_calendar_color(calendar_href: str, color: Optional[str], bindin
     return normalized
 
 
-async def _fetch_calendar_color(calendar_href: str, bindings: Bindings) -> Optional[str]:
+def _parse_calendar_timezone(payload: Optional[str]) -> Optional[str]:
+    if not payload:
+        return None
+    text = html.unescape(payload)
+    match = _TZID_REGEX.search(text)
+    if match:
+        candidate = match.group(1).strip()
+        if candidate:
+            return candidate
+    match = _X_WR_TZ_REGEX.search(text)
+    if match:
+        candidate = match.group(1).strip()
+        if candidate:
+            return candidate
+    return None
+
+
+async def _fetch_calendar_properties(calendar_href: str, bindings: Bindings) -> tuple[Optional[str], Optional[str]]:
     target_href = calendar_href if calendar_href.endswith("/") else f"{calendar_href}/"
     body = (
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
-        "<d:propfind xmlns:d=\"DAV:\" xmlns:ical=\"http://apple.com/ns/ical/\">"
-        "<d:prop><ical:calendar-color/></d:prop>"
+        "<d:propfind xmlns:d=\"DAV:\" xmlns:ical=\"http://apple.com/ns/ical/\" xmlns:cal=\"urn:ietf:params:xml:ns:caldav\">"
+        "<d:prop><ical:calendar-color/><cal:calendar-timezone/></d:prop>"
         "</d:propfind>"
     )
     headers = {"Depth": "0", "Content-Type": "application/xml; charset=utf-8"}
@@ -159,17 +182,22 @@ async def _fetch_calendar_color(calendar_href: str, bindings: Bindings) -> Optio
             body=body,
         )
     except Exception:
-        return None
+        return None, None
     if status >= 400 or not payload:
-        return None
+        return None, None
     try:
         root = etree.fromstring(payload)
     except Exception:
-        return None
-    node = root.find(".//{http://apple.com/ns/ical/}calendar-color")
-    if node is None or not node.text:
-        return None
-    return _normalize_calendar_color(node.text)
+        return None, None
+    color = None
+    color_node = root.find(".//{http://apple.com/ns/ical/}calendar-color")
+    if color_node is not None and color_node.text:
+        color = _normalize_calendar_color(color_node.text)
+    timezone = None
+    tz_node = root.find(".//{urn:ietf:params:xml:ns:caldav}calendar-timezone")
+    if tz_node is not None and tz_node.text:
+        timezone = _parse_calendar_timezone(tz_node.text)
+    return color, timezone
 
 
 def _client_for(resource_url: str, apple_id: str, apple_app_password: str) -> DAVClient:
@@ -336,6 +364,8 @@ async def ensure_calendar(bindings: Bindings, *, _reset_attempted: bool = False)
     stored_color_raw = settings.get("calendar_color")
     stored_color = _normalize_calendar_color(stored_color_raw)
     calendar_color = stored_color or DEFAULT_CALENDAR_COLOR
+    stored_timezone = settings.get("calendar_timezone")
+    stored_date_override = settings.get("date_only_timezone")
     created = False
     if not calendar_href:
         principal = await discover_principal(CALDAV_ORIGIN, bindings.apple_id, bindings.apple_app_password)
@@ -361,14 +391,22 @@ async def ensure_calendar(bindings: Bindings, *, _reset_attempted: bool = False)
         }
         await save_settings(bindings.state, settings)
     remote_color = None
+    remote_timezone = None
     if calendar_href:
-        remote_color = await _fetch_calendar_color(calendar_href, bindings)
+        remote_color, remote_timezone = await _fetch_calendar_properties(calendar_href, bindings)
         if created:
             applied_color = await _apply_calendar_color(calendar_href, calendar_color, bindings)
             remote_color = applied_color or remote_color
     desired_color = remote_color or stored_color or DEFAULT_CALENDAR_COLOR
+    updates: Dict[str, Optional[str]] = {}
     if desired_color != stored_color_raw:
-        settings = await update_settings(bindings.state, calendar_color=desired_color)
+        updates["calendar_color"] = desired_color
+    if remote_timezone and remote_timezone != stored_timezone:
+        updates["calendar_timezone"] = remote_timezone
+    if remote_timezone and not stored_date_override:
+        updates.setdefault("date_only_timezone", remote_timezone)
+    if updates:
+        settings = await update_settings(bindings.state, **updates)
 
     final_settings = await load_settings(bindings.state)
     if final_settings.get("calendar_href"):
