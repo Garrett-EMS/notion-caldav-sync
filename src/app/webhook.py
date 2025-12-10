@@ -13,10 +13,23 @@ try:
     from .logger import log
     from .stores import load_webhook_token, persist_webhook_token
 except ImportError:
-    from config import get_bindings  # type: ignore
-    from engine import handle_webhook_tasks, run_full_sync  # type: ignore
-    from logger import log  # type: ignore
-    from stores import load_webhook_token, persist_webhook_token  # type: ignore
+    try:
+        from config import get_bindings  # type: ignore
+        from engine import handle_webhook_tasks, run_full_sync  # type: ignore
+        from logger import log  # type: ignore
+        from stores import load_webhook_token, persist_webhook_token  # type: ignore
+    except ImportError:
+        import sys
+        from pathlib import Path
+
+        _MODULE_DIR = Path(__file__).resolve().parent
+        if str(_MODULE_DIR) not in sys.path:
+            sys.path.insert(0, str(_MODULE_DIR))
+
+        from config import get_bindings  # type: ignore
+        from engine import handle_webhook_tasks, run_full_sync  # type: ignore
+        from logger import log  # type: ignore
+        from stores import load_webhook_token, persist_webhook_token  # type: ignore
 
 
 _PAGE_ID_KEYS = {"page_id", "pageId"}

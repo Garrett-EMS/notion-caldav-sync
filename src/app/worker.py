@@ -1,10 +1,18 @@
 import json
+import sys
+from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 from workers import WorkerEntrypoint, Response
 
 # Lazy imports to avoid exceeding Worker startup CPU limits
 # All heavy imports are deferred until first request/scheduled run
+
+_IN_PACKAGE = __package__ not in (None, "")
+if not _IN_PACKAGE:
+    _MODULE_DIR = Path(__file__).resolve().parent
+    if str(_MODULE_DIR) not in sys.path:
+        sys.path.insert(0, str(_MODULE_DIR))
 
 
 class Default(WorkerEntrypoint):

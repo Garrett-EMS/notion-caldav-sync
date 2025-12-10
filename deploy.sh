@@ -21,10 +21,13 @@ reuse_namespace_from_config() {
     python3 "$HELPERS_PATH" wrangler-toml "$CONFIG_PATH" 2>/dev/null || true
   )
   if [ -n "$existing_id" ]; then
-    CLOUDFLARE_STATE_NAMESPACE="$existing_id"
-    export CLOUDFLARE_STATE_NAMESPACE
-    echo "Reusing STATE namespace id from wrangler.toml: $CLOUDFLARE_STATE_NAMESPACE"
-    return 0
+    if namespace_exists "$existing_id"; then
+      CLOUDFLARE_STATE_NAMESPACE="$existing_id"
+      export CLOUDFLARE_STATE_NAMESPACE
+      echo "Reusing STATE namespace id from wrangler.toml: $CLOUDFLARE_STATE_NAMESPACE"
+      return 0
+    fi
+    echo "STATE namespace id in wrangler.toml is missing from the account; will create a fresh one."
   fi
   return 1
 }
@@ -46,11 +49,25 @@ discover_namespace_id() {
   fi
 }
 
+namespace_exists() {
+  local namespace_id=${1:-}
+  if list_json=$(uv run -- pywrangler kv namespace list 2>/dev/null); then
+    if printf '%s' "$list_json" | python3 "$HELPERS_PATH" namespace-exists "$namespace_id" >/dev/null; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
 # Ensure we know the namespace ID (reuse existing or create if missing)
 ensure_namespace() {
   if [ -n "${CLOUDFLARE_STATE_NAMESPACE:-}" ]; then
     echo "STATE namespace already set: $CLOUDFLARE_STATE_NAMESPACE"
-    return
+    if namespace_exists "$CLOUDFLARE_STATE_NAMESPACE"; then
+      return
+    fi
+    echo "STATE namespace id does not exist in the account; creating a new namespace..."
+    unset CLOUDFLARE_STATE_NAMESPACE
   fi
 
   if reuse_namespace_from_config; then
@@ -66,26 +83,33 @@ ensure_namespace() {
   fi
 
   echo "Creating STATE namespace \"$STATE_NAMESPACE_NAME\" via pywrangler ..."
-  if ! output=$(uv run -- pywrangler kv namespace create "$STATE_NAMESPACE_NAME" 2>&1); then
+  if output=$(uv run -- pywrangler kv namespace create "$STATE_NAMESPACE_NAME" 2>&1); then
+    :
+  else
+    create_status=$?
+  fi
+  if echo "$output" | grep -qi "already exists"; then
     echo "$output"
-    if echo "$output" | grep -q "already exists"; then
-      echo "Namespace already exists; attempting to discover its ID..."
-      existing_id=$(discover_namespace_id)
-      if [ -z "$existing_id" ]; then
-        echo "Unable to discover namespace id automatically; please set CLOUDFLARE_STATE_NAMESPACE manually."
-        exit 1
-      fi
-      CLOUDFLARE_STATE_NAMESPACE="$existing_id"
-      export CLOUDFLARE_STATE_NAMESPACE
-      echo "Found existing namespace id: $CLOUDFLARE_STATE_NAMESPACE"
-      return
+    echo "Namespace already exists; attempting to discover its ID..."
+    existing_id=$(discover_namespace_id)
+    if [ -z "$existing_id" ]; then
+      echo "Unable to discover namespace id automatically; please set CLOUDFLARE_STATE_NAMESPACE manually."
+      exit 1
     fi
+    CLOUDFLARE_STATE_NAMESPACE="$existing_id"
+    export CLOUDFLARE_STATE_NAMESPACE
+    echo "Found existing namespace id: $CLOUDFLARE_STATE_NAMESPACE"
+    return
+  fi
+  if [ "${create_status:-0}" -ne 0 ]; then
+    echo "$output"
     exit 1
   fi
   CLOUDFLARE_STATE_NAMESPACE=$(
     printf "%s\n" "$output" | python3 "$HELPERS_PATH" namespace-create || true
   )
   if [ -z "$CLOUDFLARE_STATE_NAMESPACE" ]; then
+    echo "$output"
     echo "Unable to parse namespace id. Please set CLOUDFLARE_STATE_NAMESPACE manually."
     exit 1
   fi

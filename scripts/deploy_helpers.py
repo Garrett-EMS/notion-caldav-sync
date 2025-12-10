@@ -86,6 +86,28 @@ def cmd_namespace_list(title: str, stdin_blob: str) -> int:
 
 
 def cmd_namespace_create(stdin_blob: str) -> int:
+    try:
+        payload = _extract_json(stdin_blob)
+    except ValueError:
+        payload = None
+
+    if isinstance(payload, dict):
+        result = payload.get("result") or payload
+        if isinstance(result, dict):
+            namespace_id = result.get("id") or result.get("namespace_id")
+            if namespace_id:
+                print(namespace_id)
+                return 0
+
+    if isinstance(payload, list):
+        for entry in payload:
+            if not isinstance(entry, dict):
+                continue
+            namespace_id = entry.get("id") or entry.get("namespace_id")
+            if namespace_id:
+                print(namespace_id)
+                return 0
+
     for line in stdin_blob.splitlines():
         line = line.strip()
         if not line:
@@ -94,10 +116,25 @@ def cmd_namespace_create(stdin_blob: str) -> int:
             payload = json.loads(line)
         except json.JSONDecodeError:
             continue
-        result = payload.get("result") or {}
-        namespace_id = result.get("id")
-        if namespace_id:
-            print(namespace_id)
+        if isinstance(payload, dict):
+            result = payload.get("result") or payload
+            if isinstance(result, dict):
+                namespace_id = result.get("id") or result.get("namespace_id")
+                if namespace_id:
+                    print(namespace_id)
+                    return 0
+    return 1
+
+
+def cmd_namespace_exists(namespace_id: str, stdin_blob: str) -> int:
+    try:
+        payload = _extract_json(stdin_blob)
+    except ValueError:
+        return 1
+
+    entries = payload if isinstance(payload, list) else payload.get("result", [])
+    for entry in entries:
+        if entry.get("id") == namespace_id:
             return 0
     return 1
 
@@ -114,6 +151,9 @@ def main(argv: list[str]) -> int:
 
     subparsers.add_parser("namespace-create", help="extract namespace id from wrangler namespace create output")
 
+    exists_parser = subparsers.add_parser("namespace-exists", help="check if a namespace id exists in list output")
+    exists_parser.add_argument("namespace_id")
+
     args = parser.parse_args(argv)
     if args.command == "wrangler-toml":
         return cmd_wrangler_toml(args.path)
@@ -123,6 +163,9 @@ def main(argv: list[str]) -> int:
     if args.command == "namespace-create":
         blob = sys.stdin.read()
         return cmd_namespace_create(blob)
+    if args.command == "namespace-exists":
+        blob = sys.stdin.read()
+        return cmd_namespace_exists(args.namespace_id, blob)
     parser.error("Unknown subcommand")
 
 

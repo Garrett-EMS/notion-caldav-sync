@@ -150,6 +150,19 @@ async def load_settings(ns) -> Dict[str, Any]:
         raw = await _kv_get(ns, key)
         if raw is None:
             continue
+        if not isinstance(raw, (str, bytes, bytearray)):
+            try:  # pragma: no cover - only inside Workers
+                from pyodide.ffi import JsProxy  # type: ignore
+
+                if isinstance(raw, JsProxy):
+                    try:
+                        raw = raw.to_py()
+                    except Exception:
+                        raw = None
+            except ImportError:
+                raw = None
+        if raw is None or not isinstance(raw, (str, bytes, bytearray)):
+            continue
         try:
             settings[field] = json.loads(raw)
         except json.JSONDecodeError:

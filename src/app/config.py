@@ -1,21 +1,28 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 
 NOTION_VERSION = "2025-09-03"
 
 
-@dataclass(slots=True)
 class Bindings:
     """Resolved Worker bindings with consistent attribute names."""
 
-    state: Any
-    apple_id: str
-    apple_app_password: str
-    notion_token: str
-    admin_token: str = ""
+    def __init__(
+        self,
+        *,
+        state: Any,
+        apple_id: str,
+        apple_app_password: str,
+        notion_token: str,
+        admin_token: str = "",
+    ) -> None:
+        self.state = state
+        self.apple_id = apple_id
+        self.apple_app_password = apple_app_password
+        self.notion_token = notion_token
+        self.admin_token = admin_token
 
     @classmethod
     def from_worker_env(cls, env: Any) -> "Bindings":

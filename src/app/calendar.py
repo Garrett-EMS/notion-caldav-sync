@@ -7,24 +7,17 @@ import re
 from typing import Dict, List, Optional, Sequence
 from urllib.parse import urlparse, urljoin
 
+HAS_CALDAV = False
+CALDAV_DAVError: type[BaseException] = Exception
+DAVClient = None  # type: ignore
+CalDavCalendar = None  # type: ignore
+dav = None  # type: ignore
+HAS_NATIVE_WEBDAV = False
+
 try:  # pragma: no cover - lxml unavailable inside Workers
     from lxml import etree  # type: ignore
 except ImportError:  # pragma: no cover
     from xml.etree import ElementTree as etree  # type: ignore
-
-try:  # pragma: no cover - caldav not available inside Workers
-    from caldav import DAVClient
-    from caldav.elements import dav
-    from caldav.lib import error as caldav_error
-    from caldav.objects import Calendar as CalDavCalendar
-
-    HAS_CALDAV = True
-except ImportError:  # pragma: no cover
-    DAVClient = None  # type: ignore
-    dav = None  # type: ignore
-    caldav_error = Exception  # type: ignore
-    CalDavCalendar = None  # type: ignore
-    HAS_CALDAV = False
 
 try:
     from .config import Bindings
@@ -84,6 +77,22 @@ except ImportError:  # pragma: no cover - flat module fallback
     update_settings = _stores.update_settings
     http_request = _webdav.http_request
     HAS_NATIVE_WEBDAV = _webdav.HAS_NATIVE_WEBDAV
+
+# Import caldav lazily only when we lack native WebDAV (e.g., local dev/CLI).
+if not HAS_NATIVE_WEBDAV:
+    try:  # pragma: no cover - caldav unavailable inside Workers
+        from caldav import DAVClient
+        from caldav.elements import dav
+        from caldav.lib import error as caldav_error
+        from caldav.objects import Calendar as CalDavCalendar
+
+        HAS_CALDAV = True
+        CALDAV_DAVError = getattr(caldav_error, "DAVError", Exception)
+    except ImportError:  # pragma: no cover
+        DAVClient = None  # type: ignore
+        CalDavCalendar = None  # type: ignore
+        dav = None  # type: ignore
+        CALDAV_DAVError = Exception
 
 
 _TZID_REGEX = re.compile(r"TZID(?:;[^:]+)?:([^\r\n]+)")
@@ -220,7 +229,7 @@ async def _list_events_via_caldav(calendar_href: str, apple_id: str, apple_app_p
     try:
         response = calendar._query_properties(props=[dav.GetEtag()], depth=1)
         objects = response.find_objects_and_props()
-    except caldav_error.DAVError:
+    except CALDAV_DAVError:
         return []
     events: List[Dict[str, str]] = []
     for href, props in objects.items():
@@ -336,7 +345,7 @@ async def delete_event(event_url: str, apple_id: str, apple_app_password: str) -
     client = _client_for(event_url, apple_id, apple_app_password)
     try:
         client.request(event_url, "DELETE")
-    except caldav_error.DAVError:
+    except CALDAV_DAVError:
         pass
 
 
