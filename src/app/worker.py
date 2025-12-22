@@ -11,8 +11,12 @@ from workers import WorkerEntrypoint, Response
 _IN_PACKAGE = __package__ not in (None, "")
 if not _IN_PACKAGE:
     _MODULE_DIR = Path(__file__).resolve().parent
-    if str(_MODULE_DIR) not in sys.path:
-        sys.path.insert(0, str(_MODULE_DIR))
+    _PARENT_DIR = _MODULE_DIR.parent
+    # Prefer adding the parent so `import app.*` works when the folder layout is preserved,
+    # but also keep the module directory for flat bundles.
+    for candidate in (str(_PARENT_DIR), str(_MODULE_DIR)):
+        if candidate not in sys.path:
+            sys.path.insert(0, candidate)
 
 
 class Default(WorkerEntrypoint):

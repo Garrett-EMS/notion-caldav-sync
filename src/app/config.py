@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from .constants import resolve_status_emoji_style
+try:
+    from .constants import resolve_status_emoji_style
+except ImportError:  # pragma: no cover - flat module fallback (Workers bundle)
+    from constants import resolve_status_emoji_style  # type: ignore
 
 
 NOTION_VERSION = "2025-09-03"
