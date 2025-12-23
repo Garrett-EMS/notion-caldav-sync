@@ -160,7 +160,7 @@ def _date_only_timezone(settings: Optional[Dict[str, Any]]) -> tzinfo:
 def _description_for_task(task: TaskInfo) -> str:
     parts = [f"Source: {task.database_name or '-'}"]
     if task.category:
-        parts.append(f"Category: {task.category}")
+        parts.append(f"{task.category_name}: {task.category}")
     if task.description:
         parts.extend(["", task.description])
     return "\n".join(parts)
@@ -170,9 +170,18 @@ def _event_url(calendar_href: str, notion_id: str) -> str:
     return calendar_href.rstrip("/") + f"/{notion_id}.ics"
 
 
-def _build_ics_for_task(task: TaskInfo, calendar_color: str, *, date_only_tz: tzinfo) -> str:
+def _build_ics_for_task(
+    task: TaskInfo,
+    calendar_color: str,
+    *,
+    date_only_tz: tzinfo,
+    status_emoji_style: str,
+) -> str:
     normalized_status = _status_for_task(task, date_only_tz=date_only_tz)
-    emoji = status_to_emoji(normalized_status) or status_to_emoji("Todo")
+    emoji = status_to_emoji(normalized_status, style=status_emoji_style) or status_to_emoji(
+        "Todo",
+        style=status_emoji_style,
+    )
     return build_event(
         task.notion_id,
         task.title or "",
@@ -263,7 +272,12 @@ async def _write_task_event(
         return
     if not task.notion_id:
         return
-    ics = _build_ics_for_task(task, calendar_color, date_only_tz=date_only_tz)
+    ics = _build_ics_for_task(
+        task,
+        calendar_color,
+        date_only_tz=date_only_tz,
+        status_emoji_style=bindings.status_emoji_style,
+    )
     event_url = _event_url(calendar_href, task.notion_id)
     await calendar_put_event(event_url, ics, bindings.apple_id, bindings.apple_app_password)
 
@@ -307,7 +321,12 @@ async def run_full_sync(bindings: Bindings) -> Dict[str, any]:
             continue
         if not task.notion_id:
             continue
-        ics = _build_ics_for_task(task, calendar_color, date_only_tz=date_only_tz)
+        ics = _build_ics_for_task(
+            task,
+            calendar_color,
+            date_only_tz=date_only_tz,
+            status_emoji_style=bindings.status_emoji_style,
+        )
         payload_hash = _hash_ics_payload(ics)
         event_url = _event_url(calendar_href, task.notion_id)
         await calendar_put_event(event_url, ics, bindings.apple_id, bindings.apple_app_password)
